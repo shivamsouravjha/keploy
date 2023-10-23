@@ -275,6 +275,7 @@ func ReadBytes(reader *Connection) ([]byte, error) {
 		isTLS := isTLSHandshake(testBuffer)
 		if isTLS {
 			mu.Lock()
+			defer mu.Unlock()
 			multiReader := io.MultiReader(connReader, *reader.ClientConnection)
 			*reader.ClientConnection = &CustomConn{
 				Conn: *reader.ClientConnection,
@@ -295,7 +296,6 @@ func ReadBytes(reader *Connection) ([]byte, error) {
 			fmt.Println("dst", err)
 			reader.DestConnection = &dst
 			fmt.Println("twist of fate happened", sourcePort)
-			mu.Unlock()
 		}
 	}
 	for {
