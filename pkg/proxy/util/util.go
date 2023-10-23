@@ -2,6 +2,11 @@ package util
 
 import (
 	"bufio"
+	"crypto"
+
+	"crypto/tls"
+	"crypto/x509"
+	"embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -21,25 +26,70 @@ import (
 	"strings"
 	"unicode"
 
+	cfsslLog "github.com/cloudflare/cfssl/log"
+
 	"github.com/agnivade/levenshtein"
+	"github.com/cloudflare/cfssl/csr"
+	"github.com/cloudflare/cfssl/helpers"
 	"github.com/cloudflare/cfssl/log"
+	"github.com/cloudflare/cfssl/signer"
+	"github.com/cloudflare/cfssl/signer/local"
 
 	"go.keploy.io/server/pkg"
-	"go.keploy.io/server/pkg/models"
 	"go.keploy.io/server/pkg/hooks"
+	"go.keploy.io/server/pkg/hooks/structs"
+	"go.keploy.io/server/pkg/models"
 	"go.keploy.io/server/utils"
+)
+
+type certKeyPair struct {
+	cert tls.Certificate
+	host string
+}
+
+var (
+	caPrivKey      interface{}
+	caCertParsed   *x509.Certificate
+	destinationUrl string
+	SourceDestInfo = make(map[int]*structs.DestInfo)
 )
 
 var Emoji = "\U0001F430" + " Keploy:"
 
 var sendLogs = true
 
-func ReadBuffConn(conn net.Conn, bufferChannel chan []byte, errChannel chan error, logger *zap.Logger) error {
+//go:embed asset/ca.crt
+var CaCrt []byte
+
+//go:embed asset/ca.key
+var CaPKey []byte
+
+//go:embed asset
+var CaFolder embed.FS
+
+type Connection struct {
+	ClientConnection *net.Conn
+	DestConnection   *net.Conn
+	IsClient         bool
+}
+type CustomConn struct {
+	net.Conn
+	r      io.Reader
+	logger *zap.Logger
+}
+
+func (c *CustomConn) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		c.logger.Debug("the length is 0 for the reading from customConn")
+	}
+	return c.r.Read(p)
+}
+func ReadBuffConn(conn Connection, bufferChannel chan []byte, errChannel chan error, logger *zap.Logger) error {
 	for {
-		if conn == nil {
+		if (conn.IsClient && conn.ClientConnection == nil) || (!conn.IsClient && conn.DestConnection == nil) {
 			logger.Debug("the connection is nil")
 		}
-		buffer, err := ReadBytes(conn)
+		buffer, err := ReadBytes(&conn)
 		if err != nil {
 			logger.Error("failed to read the packet message in proxy for generic dependency", zap.Error(err))
 			errChannel <- err
@@ -123,7 +173,12 @@ func Passthrough(clientConn, destConn net.Conn, requestBuffer [][]byte, recover 
 		// Recover from panic and gracefully shutdown
 		defer recover(pkg.GenerateRandomID())
 		defer utils.HandlePanic()
-		ReadBuffConn(destConn, destBufferChannel, errChannel, logger)
+		conn := Connection{
+			ClientConnection: &clientConn,
+			DestConnection:   &destConn,
+			IsClient:         false,
+		}
+		ReadBuffConn(conn, destBufferChannel, errChannel, logger)
 	}()
 
 	select {
@@ -198,14 +253,51 @@ func PeekBytes(reader *bufio.Reader) ([]byte, error) {
 
 // ReadBytes function is utilized to read the complete message from the reader until the end of the file (EOF).
 // It returns the content as a byte array.
-func ReadBytes(reader io.Reader) ([]byte, error) {
+func ReadBytes(reader *Connection) ([]byte, error) {
 	var buffer []byte
 	const maxEmptyReads = 5
 	emptyReads := 0
 
 	for {
 		buf := make([]byte, 1024)
-		n, err := reader.Read(buf)
+		var connReader *bufio.Reader
+		if reader.IsClient {
+			connReader = bufio.NewReader(*reader.ClientConnection)
+			fmt.Println("read it client")
+		} else {
+			connReader = bufio.NewReader(*reader.DestConnection)
+			fmt.Println("read it destination")
+		}
+		if reader.IsClient {
+			initialData := make([]byte, 5)
+			testBuffer, err := connReader.Peek(len(initialData))
+			fmt.Println("testBuffer", string(testBuffer), err)
+			isTLS := isTLSHandshake(testBuffer)
+			if isTLS {
+				multiReader := io.MultiReader(connReader, *reader.ClientConnection)
+				*reader.ClientConnection = &CustomConn{
+					Conn: *reader.ClientConnection,
+					r:    multiReader,
+				}
+				tlsConnection, err := HandleTLSConnection(*reader.ClientConnection)
+				fmt.Println("tlsConnection", err)
+				connReader = bufio.NewReader(tlsConnection)
+				reader.ClientConnection = &tlsConnection
+				config := &tls.Config{
+					InsecureSkipVerify: false,
+					ServerName:         destinationUrl,
+				}
+				var dst net.Conn
+				remoteAddr := (*reader.ClientConnection).RemoteAddr().(*net.TCPAddr)
+				sourcePort := remoteAddr.Port
+				dst, err = tls.Dial("tcp", fmt.Sprintf("%v:%v", destinationUrl, SourceDestInfo[sourcePort].DestPort), config)
+				fmt.Println("dst", err)
+				reader.DestConnection = &dst
+				fmt.Println("twist of fate happened", sourcePort)
+
+			}
+		}
+		n, err := connReader.Read(buf)
 
 		if n > 0 {
 			buffer = append(buffer, buf[:n]...)
@@ -216,11 +308,14 @@ func ReadBytes(reader io.Reader) ([]byte, error) {
 			if err == io.EOF {
 				emptyReads++
 				if emptyReads >= maxEmptyReads {
+					fmt.Println(err.Error(), "eof hai bhaiya")
 					return buffer, err // multiple EOFs in a row, probably a true EOF
 				}
 				time.Sleep(time.Millisecond * 100) // sleep before trying again
 				continue
 			}
+			fmt.Println(err.Error(), "error hai bhaiya")
+
 			return buffer, err
 		}
 
@@ -230,6 +325,7 @@ func ReadBytes(reader io.Reader) ([]byte, error) {
 	}
 
 	return buffer, nil
+
 }
 
 func GetLocalIPv4() (net.IP, error) {
@@ -472,4 +568,90 @@ func Fuzzymatch(tcsMocks []*models.Mock, reqBuff []byte, h *hooks.Hook) (bool, *
 		return true, tcsMocks[idx]
 	}
 	return false, &models.Mock{}
+}
+
+func isTLSHandshake(data []byte) bool {
+	if len(data) < 5 {
+		return false
+	}
+	return data[0] == 0x16 && data[1] == 0x03 && (data[2] == 0x00 || data[2] == 0x01 || data[2] == 0x02 || data[2] == 0x03)
+}
+
+func HandleTLSConnection(conn net.Conn) (net.Conn, error) {
+	//Load the CA certificate and private key
+
+	var err error
+	caPrivKey, err = helpers.ParsePrivateKeyPEM(CaPKey)
+	if err != nil {
+		return nil, err
+	}
+	caCertParsed, err = helpers.ParseCertificatePEM(CaCrt)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a TLS configuration
+	config := &tls.Config{
+		GetCertificate: certForClient,
+	}
+
+	// Wrap the TCP connection with TLS
+	tlsConn := tls.Server(conn, config)
+	// Perform the handshake
+	err = tlsConn.Handshake()
+
+	if err != nil {
+		return nil, err
+	}
+	// Use the tlsConn for further communication
+	// For example, you can read and write data using tlsConn.Read() and tlsConn.Write()
+
+	// Here, we simply close the connection
+	return tlsConn, nil
+}
+
+func certForClient(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	// Generate a new server certificate and private key for the given hostname
+	destinationUrl = clientHello.ServerName
+
+	cfsslLog.Level = cfsslLog.LevelError
+
+	serverReq := &csr.CertificateRequest{
+		//Make the name accordng to the ip of the request
+		CN: clientHello.ServerName,
+		Hosts: []string{
+			clientHello.ServerName,
+		},
+		KeyRequest: csr.NewKeyRequest(),
+	}
+
+	serverCsr, serverKey, err := csr.ParseRequest(serverReq)
+	if err != nil {
+		return nil, fmt.Errorf(Emoji+"failed to create server CSR: %v", err)
+	}
+	cryptoSigner, ok := caPrivKey.(crypto.Signer)
+	if !ok {
+		fmt.Errorf(Emoji + "failed to sign crypto key")
+	}
+	signerd, err := local.NewSigner(cryptoSigner, caCertParsed, signer.DefaultSigAlgo(cryptoSigner), nil)
+	if err != nil {
+		return nil, fmt.Errorf(Emoji+"failed to create signer: %v", err)
+	}
+
+	serverCert, err := signerd.Sign(signer.SignRequest{
+		Hosts:   serverReq.Hosts,
+		Request: string(serverCsr),
+		Profile: "web",
+	})
+	if err != nil {
+		return nil, fmt.Errorf(Emoji+"failed to sign server certificate: %v", err)
+	}
+
+	// Load the server certificate and private key
+	serverTlsCert, err := tls.X509KeyPair(serverCert, serverKey)
+	if err != nil {
+		return nil, fmt.Errorf(Emoji+"failed to load server certificate and key: %v", err)
+	}
+
+	return &serverTlsCert, nil
 }

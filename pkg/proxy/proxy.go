@@ -4,10 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto"
-	"crypto/tls"
-	"crypto/x509"
-	"embed"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -22,23 +18,15 @@ import (
 	"sync/atomic"
 
 	"go.keploy.io/server/pkg"
-	"go.keploy.io/server/pkg/proxy/integrations/grpcparser"
-	postgresparser "go.keploy.io/server/pkg/proxy/integrations/postgresParser"
 	"go.keploy.io/server/utils"
-
-	"github.com/cloudflare/cfssl/csr"
-	cfsslLog "github.com/cloudflare/cfssl/log"
-
-	"github.com/cloudflare/cfssl/helpers"
-	"github.com/cloudflare/cfssl/signer"
-	"github.com/cloudflare/cfssl/signer/local"
 
 	"github.com/miekg/dns"
 	"go.keploy.io/server/pkg/hooks"
 	"go.keploy.io/server/pkg/models"
 	genericparser "go.keploy.io/server/pkg/proxy/integrations/genericParser"
-	"go.keploy.io/server/pkg/proxy/integrations/httpparser"
+	"go.keploy.io/server/pkg/proxy/integrations/grpcparser"
 	"go.keploy.io/server/pkg/proxy/integrations/mongoparser"
+	postgresparser "go.keploy.io/server/pkg/proxy/integrations/postgresParser"
 	"go.keploy.io/server/pkg/proxy/util"
 	"go.uber.org/zap"
 
@@ -135,15 +123,6 @@ func updateCaStore() error {
 	return nil
 }
 
-//go:embed asset/ca.crt
-var caCrt []byte
-
-//go:embed asset/ca.key
-var caPKey []byte
-
-//go:embed asset
-var caFolder embed.FS
-
 // isJavaInstalled checks if java is installed on the system
 func isJavaInstalled() bool {
 	_, err := exec.LookPath("java")
@@ -165,7 +144,7 @@ func ExtractCertToTemp() (string, error) {
 	}
 
 	// Write to the file
-	_, err = tempFile.Write(caCrt)
+	_, err = tempFile.Write(util.CaCrt)
 	if err != nil {
 		return "", err
 	}
@@ -314,7 +293,7 @@ func BootProxy(logger *zap.Logger, opt Option, appCmd, appContainer string, pid 
 			return nil
 		}
 
-		_, err = fs.Write(caCrt)
+		_, err = fs.Write(util.CaCrt)
 		if err != nil {
 			logger.Error("failed to write custom ca certificate", zap.Error(err), zap.Any("root store path", path))
 			return nil
@@ -436,63 +415,6 @@ var caStoreUpdateCmd = []string{
 	"trust extract-compat",
 	"update-ca-trust extract",
 	"certctl rehash",
-}
-
-type certKeyPair struct {
-	cert tls.Certificate
-	host string
-}
-
-var (
-	caPrivKey      interface{}
-	caCertParsed   *x509.Certificate
-	destinationUrl string
-)
-
-func certForClient(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	// Generate a new server certificate and private key for the given hostname
-	destinationUrl = clientHello.ServerName
-
-	cfsslLog.Level = cfsslLog.LevelError
-
-	serverReq := &csr.CertificateRequest{
-		//Make the name accordng to the ip of the request
-		CN: clientHello.ServerName,
-		Hosts: []string{
-			clientHello.ServerName,
-		},
-		KeyRequest: csr.NewKeyRequest(),
-	}
-
-	serverCsr, serverKey, err := csr.ParseRequest(serverReq)
-	if err != nil {
-		return nil, fmt.Errorf(Emoji+"failed to create server CSR: %v", err)
-	}
-	cryptoSigner, ok := caPrivKey.(crypto.Signer)
-	if !ok {
-		log.Printf(Emoji, "Error in typecasting the caPrivKey")
-	}
-	signerd, err := local.NewSigner(cryptoSigner, caCertParsed, signer.DefaultSigAlgo(cryptoSigner), nil)
-	if err != nil {
-		return nil, fmt.Errorf(Emoji+"failed to create signer: %v", err)
-	}
-
-	serverCert, err := signerd.Sign(signer.SignRequest{
-		Hosts:   serverReq.Hosts,
-		Request: string(serverCsr),
-		Profile: "web",
-	})
-	if err != nil {
-		return nil, fmt.Errorf(Emoji+"failed to sign server certificate: %v", err)
-	}
-
-	// Load the server certificate and private key
-	serverTlsCert, err := tls.X509KeyPair(serverCert, serverKey)
-	if err != nil {
-		return nil, fmt.Errorf(Emoji+"failed to load server certificate and key: %v", err)
-	}
-
-	return &serverTlsCert, nil
 }
 
 // startProxy function initiates a proxy on the specified port to handle redirected outgoing network calls.
@@ -692,45 +614,46 @@ func isTLSHandshake(data []byte) bool {
 	return data[0] == 0x16 && data[1] == 0x03 && (data[2] == 0x00 || data[2] == 0x01 || data[2] == 0x02 || data[2] == 0x03)
 }
 
-func (ps *ProxySet) handleTLSConnection(conn net.Conn) (net.Conn, error) {
-	//Load the CA certificate and private key
+// func (ps *ProxySet) handleTLSConnection(conn net.Conn) (net.Conn, error) {
+// 	//Load the CA certificate and private key
 
-	var err error
-	caPrivKey, err = helpers.ParsePrivateKeyPEM(caPKey)
-	if err != nil {
-		ps.logger.Error(Emoji+"Failed to parse CA private key: ", zap.Error(err))
-		return nil, err
-	}
-	caCertParsed, err = helpers.ParseCertificatePEM(caCrt)
-	if err != nil {
-		ps.logger.Error(Emoji+"Failed to parse CA certificate: ", zap.Error(err))
-		return nil, err
-	}
+// 	var err error
+// 	caPrivKey, err = helpers.ParsePrivateKeyPEM(util.CaPKey)
+// 	if err != nil {
+// 		ps.logger.Error(Emoji+"Failed to parse CA private key: ", zap.Error(err))
+// 		return nil, err
+// 	}
+// 	caCertParsed, err = helpers.ParseCertificatePEM(util.CaCrt)
+// 	if err != nil {
+// 		ps.logger.Error(Emoji+"Failed to parse CA certificate: ", zap.Error(err))
+// 		return nil, err
+// 	}
 
-	// Create a TLS configuration
-	config := &tls.Config{
-		GetCertificate: certForClient,
-	}
+// 	// Create a TLS configuration
+// 	config := &tls.Config{
+// 		GetCertificate: certForClient,
+// 	}
 
-	// Wrap the TCP connection with TLS
-	tlsConn := tls.Server(conn, config)
-	// Perform the handshake
-	err = tlsConn.Handshake()
+// 	// Wrap the TCP connection with TLS
+// 	tlsConn := tls.Server(conn, config)
+// 	// Perform the handshake
+// 	err = tlsConn.Handshake()
 
-	if err != nil {
-		ps.logger.Error(Emoji+"failed to complete TLS handshake with the client with error: ", zap.Error(err))
-		return nil, err
-	}
-	// Use the tlsConn for further communication
-	// For example, you can read and write data using tlsConn.Read() and tlsConn.Write()
+// 	if err != nil {
+// 		ps.logger.Error(Emoji+"failed to complete TLS handshake with the client with error: ", zap.Error(err))
+// 		return nil, err
+// 	}
+// 	// Use the tlsConn for further communication
+// 	// For example, you can read and write data using tlsConn.Read() and tlsConn.Write()
 
-	// Here, we simply close the connection
-	return tlsConn, nil
-}
+// 	// Here, we simply close the connection
+// 	return tlsConn, nil
+// }
 
 // handleConnection function executes the actual outgoing network call and captures/forwards the request and response messages.
 func (ps *ProxySet) handleConnection(conn net.Conn, port uint32, ctx context.Context) {
-
+	defer conn.Close()
+	defer fmt.Println("asdlnsjkdn xkasn sdk dkas kn mn")
 	//checking how much time proxy takes to execute the flow.
 	start := time.Now()
 
@@ -754,6 +677,8 @@ func (ps *ProxySet) handleConnection(conn net.Conn, port uint32, ctx context.Con
 		return
 	}
 
+	util.SourceDestInfo[sourcePort] = destInfo
+
 	if destInfo.IpVersion == 4 {
 		ps.logger.Debug("", zap.Any("DestIp4", destInfo.DestIp4), zap.Any("DestPort", destInfo.DestPort), zap.Any("KernelPid", destInfo.KernelPid))
 	} else if destInfo.IpVersion == 6 {
@@ -764,37 +689,120 @@ func (ps *ProxySet) handleConnection(conn net.Conn, port uint32, ctx context.Con
 	ps.hook.CleanProxyEntry(uint16(sourcePort))
 
 	clientConnId := getNextID()
-	reader := bufio.NewReader(conn)
-	initialData := make([]byte, 5)
-	testBuffer, err := reader.Peek(len(initialData))
-	if err != nil {
-		if err == io.EOF && len(testBuffer) == 0 {
-			ps.logger.Debug("received EOF, closing connection", zap.Error(err), zap.Any("connectionID", clientConnId))
-			conn.Close()
-			return
-		}
-		ps.logger.Error("failed to peek the request message in proxy", zap.Error(err), zap.Any("proxy port", port))
+	// reader := bufio.NewReader(conn)
+	// initialData := make([]byte, 5)
+	// testBuffer, err := reader.Peek(len(initialData))
+	// if err != nil {
+	// 	if err == io.EOF && len(testBuffer) == 0 {
+	// 		ps.logger.Debug("received EOF, closing connection", zap.Error(err), zap.Any("connectionID", clientConnId))
+	// 		conn.Close()
+	// 		return
+	// 	}
+	// 	ps.logger.Error("failed to peek the request message in proxy", zap.Error(err), zap.Any("proxy port", port))
+	// 	return
+	// }
+	// isTLS := isTLSHandshake(testBuffer)
+	// multiReader := io.MultiReader(reader, conn)
+	// conn = &CustomConn{
+	// 	Conn:   conn,
+	// 	r:      multiReader,
+	// 	logger: ps.logger,
+	// }
+	// if isTLS {
+	// 	conn, err = ps.handleTLSConnection(conn)
+	// 	if err != nil {
+	// 		ps.logger.Error("failed to handle TLS connection", zap.Error(err))
+	// 		return
+	// 	}
+	// }
+	connEstablishedAt := time.Now()
+	// initialData := make([]byte, 5)
+	var dst net.Conn
+	var actualAddress = ""
+	if destInfo.IpVersion == 4 {
+		actualAddress = fmt.Sprintf("%v:%v", util.ToIP4AddressStr(destInfo.DestIp4), destInfo.DestPort)
+	} else if destInfo.IpVersion == 6 {
+		actualAddress = fmt.Sprintf("[%v]:%v", util.ToIPv6AddressStr(destInfo.DestIp6), destInfo.DestPort)
+	}
+	dst, err = net.Dial("tcp", actualAddress)
+	if err != nil && models.GetMode() != models.MODE_TEST {
+		ps.logger.Error("failed to dial the connection to destination server", zap.Error(err), zap.Any("proxy port", port), zap.Any("server address", actualAddress))
+		// conn.Close()
 		return
 	}
-	isTLS := isTLSHandshake(testBuffer)
-	multiReader := io.MultiReader(reader, conn)
-	conn = &CustomConn{
-		Conn:   conn,
-		r:      multiReader,
-		logger: ps.logger,
-	}
-	if isTLS {
-		conn, err = ps.handleTLSConnection(conn)
-		if err != nil {
-			ps.logger.Error("failed to handle TLS connection", zap.Error(err))
-			return
-		}
-	}
-	connEstablishedAt := time.Now()
-
 	// attempt to read the conn until buffer is either filled or connection is closed
+
+	conns := util.Connection{
+		ClientConnection: &conn,
+		DestConnection:   &dst,
+		IsClient:         true,
+	}
+
+	clientChannel := make(chan error, 1)
+	destChannel := make(chan error, 1)
+	bufferChannel := make(chan []byte, 1)
+	// Goroutine for reading from ClientConnection
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // Ensure resources are cleaned up
+
+	// Goroutine for reading from ClientConnection
+	go func(ctx context.Context) {
+		clientConnection := conns
+		clientConnection.IsClient = true
+		bufferData, err := util.ReadBytes(&clientConnection)
+		if err == nil {
+			bufferChannel <- bufferData
+			conn = *clientConnection.ClientConnection
+			dst = *clientConnection.DestConnection
+			cancel() // Cancel other goroutines
+		} else {
+			select {
+			case <-ctx.Done():
+				return
+			case clientChannel <- err:
+			}
+		}
+	}(ctx)
+
+	// Goroutine for reading from DestConnection
+	go func(ctx context.Context) {
+		destConnection := conns
+		destConnection.IsClient = false
+		bufferData, err := util.ReadBytes(&destConnection)
+		if err == nil {
+			bufferChannel <- bufferData
+			conn = *destConnection.ClientConnection
+			dst = *destConnection.DestConnection
+			cancel() // Cancel other goroutines
+		} else {
+			select {
+			case <-ctx.Done():
+				return
+			case destChannel <- err:
+			}
+		}
+	}(ctx)
+
+	// Wait for results from both goroutines
+	var clientErr error
+	var destErr error
 	var buffer []byte
-	buffer, err = util.ReadBytes(conn)
+	select {
+	case buffer = <-bufferChannel:
+		// Handle the buffer here.
+		fmt.Println("Received buffer:", string(buffer))
+	case clientErr = <-clientChannel:
+		// Handle the client error here.
+		fmt.Println("Client error:", err)
+	case destErr = <-destChannel:
+		// Handle the destination error here.
+		fmt.Println("Destination error:", err)
+	}
+	// Print errors
+	fmt.Println("Client error:", clientErr)
+	fmt.Println("Dest error:", destErr, sourcePort, destInfo.DestPort)
+	// conn = *conns.ClientConnection
+	// dst = *conns.DestConnection
 	if err != nil && err != io.EOF {
 		ps.logger.Error("failed to read the request message in proxy", zap.Error(err), zap.Any("proxy port", port))
 		return
@@ -814,37 +822,37 @@ func (ps *ProxySet) handleConnection(conn net.Conn, port uint32, ctx context.Con
 	}
 
 	// dst stores the connection with actual destination for the outgoing network call
-	var dst net.Conn
-	var actualAddress = ""
-	if destInfo.IpVersion == 4 {
-		actualAddress = fmt.Sprintf("%v:%v", util.ToIP4AddressStr(destInfo.DestIp4), destInfo.DestPort)
-	} else if destInfo.IpVersion == 6 {
-		actualAddress = fmt.Sprintf("[%v]:%v", util.ToIPv6AddressStr(destInfo.DestIp6), destInfo.DestPort)
-	}
+	// var dst net.Conn
+	// var actualAddress = ""
+	// if destInfo.IpVersion == 4 {
+	// 	actualAddress = fmt.Sprintf("%v:%v", util.ToIP4AddressStr(destInfo.DestIp4), destInfo.DestPort)
+	// } else if destInfo.IpVersion == 6 {
+	// 	actualAddress = fmt.Sprintf("[%v]:%v", util.ToIPv6AddressStr(destInfo.DestIp6), destInfo.DestPort)
+	// }
 
 	//Dialing for tls connection
 	destConnId := getNextID()
 	logger := ps.logger.With(zap.Any("Client IP Address", conn.RemoteAddr().String()), zap.Any("Client ConnectionID", clientConnId), zap.Any("Destination IP Address", actualAddress), zap.Any("Destination ConnectionID", destConnId))
-	if isTLS {
-		logger.Debug("", zap.Any("isTLS", isTLS))
-		config := &tls.Config{
-			InsecureSkipVerify: false,
-			ServerName:         destinationUrl,
-		}
-		dst, err = tls.Dial("tcp", fmt.Sprintf("%v:%v", destinationUrl, destInfo.DestPort), config)
-		if err != nil && models.GetMode() != models.MODE_TEST {
-			logger.Error("failed to dial the connection to destination server", zap.Error(err), zap.Any("proxy port", port), zap.Any("server address", actualAddress))
-			conn.Close()
-			return
-		}
-	} else {
-		dst, err = net.Dial("tcp", actualAddress)
-		if err != nil && models.GetMode() != models.MODE_TEST {
-			logger.Error("failed to dial the connection to destination server", zap.Error(err), zap.Any("proxy port", port), zap.Any("server address", actualAddress))
-			conn.Close()
-			return
-		}
-	}
+	// if isTLS {
+	// 	logger.Debug("", zap.Any("isTLS", isTLS))
+	// 	config := &tls.Config{
+	// 		InsecureSkipVerify: false,
+	// 		ServerName:         destinationUrl,
+	// 	}
+	// 	dst, err = tls.Dial("tcp", fmt.Sprintf("%v:%v", destinationUrl, destInfo.DestPort), config)
+	// 	if err != nil && models.GetMode() != models.MODE_TEST {
+	// 		logger.Error("failed to dial the connection to destination server", zap.Error(err), zap.Any("proxy port", port), zap.Any("server address", actualAddress))
+	// 		conn.Close()
+	// 		return
+	// 	}
+	// } else {
+	// 	dst, err = net.Dial("tcp", actualAddress)
+	// 	if err != nil && models.GetMode() != models.MODE_TEST {
+	// 		logger.Error("failed to dial the connection to destination server", zap.Error(err), zap.Any("proxy port", port), zap.Any("server address", actualAddress))
+	// 		conn.Close()
+	// 		return
+	// 	}
+	// }
 
 	for _, port := range ps.PassThroughPorts {
 		if port == uint(destInfo.DestPort) {
@@ -857,9 +865,9 @@ func (ps *ProxySet) handleConnection(conn net.Conn, port uint32, ctx context.Con
 	}
 
 	switch {
-	case httpparser.IsOutgoingHTTP(buffer):
-		// capture the otutgoing http text messages
-		httpparser.ProcessOutgoingHttp(buffer, conn, dst, ps.hook, logger, ctx)
+	// case httpparser.IsOutgoingHTTP(buffer):
+	// capture the otutgoing http text messages
+	// httpparser.ProcessOutgoingHttp(buffer, conn, dst, ps.hook, logger, ctx)
 	case mongoparser.IsOutgoingMongo(buffer):
 		logger.Debug("into mongo parsing mode")
 		mongoparser.ProcessOutgoingMongo(clientConnId, destConnId, buffer, conn, dst, ps.hook, connEstablishedAt, readRequestDelay, logger, ctx)
@@ -876,7 +884,7 @@ func (ps *ProxySet) handleConnection(conn net.Conn, port uint32, ctx context.Con
 	}
 
 	// Closing the user client connection
-	conn.Close()
+	//conn.Close()
 	duration := time.Since(start)
 	logger.Debug("time taken by proxy to execute the flow", zap.Any("Duration(ms)", duration.Milliseconds()))
 }
@@ -904,7 +912,12 @@ func (ps *ProxySet) callNext(requestBuffer []byte, clientConn, destConn net.Conn
 		go func() {
 			defer ps.hook.Recover(pkg.GenerateRandomID())
 			defer utils.HandlePanic()
-			buffer, err := util.ReadBytes(clientConn)
+			conn := util.Connection{
+				ClientConnection: &clientConn,
+				DestConnection:   &destConn,
+				IsClient:         true,
+			}
+			buffer, err := util.ReadBytes(&conn)
 			if err != nil {
 				logger.Error("failed to read the request from client in proxy", zap.Error(err), zap.Any("Client Addr", clientConn.RemoteAddr().String()))
 				return
@@ -916,7 +929,12 @@ func (ps *ProxySet) callNext(requestBuffer []byte, clientConn, destConn net.Conn
 		go func() {
 			defer ps.hook.Recover(pkg.GenerateRandomID())
 			defer utils.HandlePanic()
-			buffer, err := util.ReadBytes(destConn)
+			conn := util.Connection{
+				ClientConnection: &clientConn,
+				DestConnection:   &destConn,
+				IsClient:         false,
+			}
+			buffer, err := util.ReadBytes(&conn)
 			if err != nil {
 				logger.Error("failed to read the response from destination in proxy", zap.Error(err), zap.Any("Destination Addr", destConn.RemoteAddr().String()))
 				return

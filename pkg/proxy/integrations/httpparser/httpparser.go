@@ -84,7 +84,12 @@ func ProcessOutgoingHttp(request []byte, clientConn, destConn net.Conn, h *hooks
 func contentLengthRequest(finalReq *[]byte, clientConn, destConn net.Conn, logger *zap.Logger, contentLength int) {
 	for contentLength > 0 {
 		clientConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		requestChunked, err := util.ReadBytes(clientConn)
+		conn := util.Connection{
+			ClientConnection: &clientConn,
+			DestConnection:   &destConn,
+			IsClient:         true,
+		}
+		requestChunked, err := util.ReadBytes(&conn)
 		if err != nil {
 			if err == io.EOF {
 				logger.Error("connection closed by the user client", zap.Error(err))
@@ -113,7 +118,12 @@ func chunkedRequest(finalReq *[]byte, clientConn, destConn net.Conn, logger *zap
 	if transferEncodingHeader == "chunked" {
 		for {
 			clientConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-			requestChunked, err := util.ReadBytes(clientConn)
+			conn := util.Connection{
+				ClientConnection: &clientConn,
+				DestConnection:   &destConn,
+				IsClient:         true,
+			}
+			requestChunked, err := util.ReadBytes(&conn)
 			if err != nil && err != io.EOF {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					break
@@ -140,7 +150,12 @@ func contentLengthResponse(finalResp *[]byte, clientConn, destConn net.Conn, log
 	for contentLength > 0 {
 		//Set deadline of 5 seconds
 		destConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		resp, err := util.ReadBytes(destConn)
+		conn := util.Connection{
+			ClientConnection: &clientConn,
+			DestConnection:   &destConn,
+			IsClient:         false,
+		}
+		resp, err := util.ReadBytes(&conn)
 		if err != nil {
 			//Check if the connection closed.
 			if err == io.EOF {
@@ -172,7 +187,12 @@ func chunkedResponse(finalResp *[]byte, clientConn, destConn net.Conn, logger *z
 		for {
 			//Set deadline of 5 seconds
 			destConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-			resp, err := util.ReadBytes(destConn)
+			conn := util.Connection{
+				ClientConnection: &clientConn,
+				DestConnection:   &destConn,
+				IsClient:         false,
+			}
+			resp, err := util.ReadBytes(&conn)
 
 			if err != nil {
 				//Check if the connection closed.
@@ -290,7 +310,7 @@ func checkIfGzipped(check io.ReadCloser) (bool, *bufio.Reader) {
 }
 
 // Decodes the mocks in test mode so that they can be sent to the user application.
-func decodeOutgoingHttp(requestBuffer []byte, clienConn, destConn net.Conn, h *hooks.Hook, logger *zap.Logger) {
+func decodeOutgoingHttp(requestBuffer []byte, clientConn, destConn net.Conn, h *hooks.Hook, logger *zap.Logger) {
 	//Matching algorithmm
 	//Get the mocks
 	for {
@@ -299,13 +319,18 @@ func decodeOutgoingHttp(requestBuffer []byte, clienConn, destConn net.Conn, h *h
 		//Check if the expected header is present
 		if bytes.Contains(requestBuffer, []byte("Expect: 100-continue")) {
 			//Send the 100 continue response
-			_, err := clienConn.Write([]byte("HTTP/1.1 100 Continue\r\n\r\n"))
+			_, err := clientConn.Write([]byte("HTTP/1.1 100 Continue\r\n\r\n"))
 			if err != nil {
 				logger.Error("failed to write the 100 continue response to the user application", zap.Error(err))
 				return
 			}
 			//Read the request buffer again
-			newRequest, err := util.ReadBytes(clienConn)
+			conn := util.Connection{
+				ClientConnection: &clientConn,
+				DestConnection:   &destConn,
+				IsClient:         true,
+			}
+			newRequest, err := util.ReadBytes(&conn)
 			if err != nil {
 				logger.Error("failed to read the request buffer from the user application", zap.Error(err))
 				return
@@ -313,7 +338,7 @@ func decodeOutgoingHttp(requestBuffer []byte, clienConn, destConn net.Conn, h *h
 			//Append the new request buffer to the old request buffer
 			requestBuffer = append(requestBuffer, newRequest...)
 		}
-		handleChunkedRequests(&requestBuffer, clienConn, destConn, logger)
+		handleChunkedRequests(&requestBuffer, clientConn, destConn, logger)
 		//Parse the request buffer
 		req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(requestBuffer)))
 		if err != nil {
@@ -382,7 +407,7 @@ func decodeOutgoingHttp(requestBuffer []byte, clienConn, destConn net.Conn, h *h
 
 		if len(eligibleMock) == 0 {
 			logger.Error("Didn't match any prexisting http mock")
-			util.Passthrough(clienConn, destConn, [][]byte{requestBuffer}, h.Recover, logger)
+			util.Passthrough(clientConn, destConn, [][]byte{requestBuffer}, h.Recover, logger)
 			return
 		}
 
@@ -442,14 +467,18 @@ func decodeOutgoingHttp(requestBuffer []byte, clienConn, destConn net.Conn, h *h
 
 		logger.Debug(fmt.Sprintf("The response headers are:\n%v", headers))
 
-		_, err = clienConn.Write([]byte(responseString))
+		_, err = clientConn.Write([]byte(responseString))
 		if err != nil {
 			logger.Error("failed to write the mock output to the user application", zap.Error(err))
 			return
 		}
 		h.PopIndex(bestMatchIndex)
-
-		requestBuffer, err = util.ReadBytes(clienConn)
+		conn := util.Connection{
+			ClientConnection: &clientConn,
+			DestConnection:   &destConn,
+			IsClient:         true,
+		}
+		requestBuffer, err = util.ReadBytes(&conn)
 		if err != nil {
 			logger.Debug("failed to read the request buffer from the client", zap.Error(err))
 			logger.Debug("This was the last response from the server: " + string(responseString))
@@ -487,7 +516,12 @@ func encodeOutgoingHttp(request []byte, clientConn, destConn net.Conn, logger *z
 		}
 		if expectHeader == "100-continue" {
 			//Read if the response from the server is 100-continue
-			resp, err = util.ReadBytes(destConn)
+			conn := util.Connection{
+				ClientConnection: &clientConn,
+				DestConnection:   &destConn,
+				IsClient:         false,
+			}
+			resp, err = util.ReadBytes(&conn)
 			if err != nil {
 				logger.Error("failed to read the response message from the server after 100-continue request", zap.Error(err))
 				return err
@@ -504,7 +538,10 @@ func encodeOutgoingHttp(request []byte, clientConn, destConn net.Conn, logger *z
 				return err
 			}
 			//Reading the request buffer again
-			request, err = util.ReadBytes(clientConn)
+			conn = util.Connection{
+				IsClient: true,
+			}
+			request, err = util.ReadBytes(&conn)
 			if err != nil {
 				logger.Error("failed to read the request message from the user client", zap.Error(err))
 				return err
@@ -519,7 +556,12 @@ func encodeOutgoingHttp(request []byte, clientConn, destConn net.Conn, logger *z
 		}
 		handleChunkedRequests(&finalReq, clientConn, destConn, logger)
 		// read the response from the actual server
-		resp, err = util.ReadBytes(destConn)
+		conn := util.Connection{
+			ClientConnection: &clientConn,
+			DestConnection:   &destConn,
+			IsClient:         false,
+		}
+		resp, err = util.ReadBytes(&conn)
 		if err != nil {
 			if err == io.EOF {
 				logger.Debug("Response complete, exiting the loop.")
@@ -566,7 +608,6 @@ func encodeOutgoingHttp(request []byte, clientConn, destConn net.Conn, logger *z
 		//Add the content length to the headers.
 		var respBody []byte
 		//Checking if the body of the response is empty or does not exist.
-
 
 		if respParsed.Body != nil { // Read
 			if respParsed.Header.Get("Content-Encoding") == "gzip" {
@@ -624,8 +665,12 @@ func encodeOutgoingHttp(request []byte, clientConn, destConn net.Conn, logger *z
 		}, ctx)
 		finalReq = []byte("")
 		finalResp = []byte("")
-
-		finalReq, err = util.ReadBytes(clientConn)
+		conn = util.Connection{
+			ClientConnection: &clientConn,
+			DestConnection:   &destConn,
+			IsClient:         true,
+		}
+		finalReq, err = util.ReadBytes(&conn)
 		if err != nil {
 			if err != io.EOF {
 				logger.Debug("failed to read the request message from the user client", zap.Error(err))

@@ -97,14 +97,24 @@ func encodePostgresOutgoing(requestBuffer []byte, clientConn, destConn net.Conn,
 		// Recover from panic and gracefully shutdown
 		defer h.Recover(pkg.GenerateRandomID())
 		defer utils.HandlePanic()
-		ReadBuffConn(clientConn, clientBufferChannel, errChannel, logger)
+		conn := util.Connection{
+			ClientConnection: &clientConn,
+			DestConnection:   &destConn,
+			IsClient:         true,
+		}
+		ReadBuffConn(conn, clientBufferChannel, errChannel, logger)
 	}()
 	// read response from destination
 	go func() {
 		// Recover from panic and gracefully shutdown
 		defer h.Recover(pkg.GenerateRandomID())
 		defer utils.HandlePanic()
-		ReadBuffConn(destConn, destBufferChannel, errChannel, logger)
+		conn := util.Connection{
+			ClientConnection: &clientConn,
+			DestConnection:   &destConn,
+			IsClient:         false,
+		}
+		ReadBuffConn(conn, destBufferChannel, errChannel, logger)
 	}()
 
 	isPreviousChunkRequest := false
@@ -219,7 +229,12 @@ func decodePostgresOutgoing(requestBuffer []byte, clientConn, destConn net.Conn,
 		}
 
 		for {
-			buffer, err := util.ReadBytes(clientConn)
+			conn := util.Connection{
+				ClientConnection: &clientConn,
+				DestConnection:   &destConn,
+				IsClient:         true,
+			}
+			buffer, err := util.ReadBytes(&conn)
 			if netErr, ok := err.(net.Error); !(ok && netErr.Timeout()) && err != nil {
 
 				if err == io.EOF {
@@ -272,9 +287,9 @@ func decodePostgresOutgoing(requestBuffer []byte, clientConn, destConn net.Conn,
 
 }
 
-func ReadBuffConn(conn net.Conn, bufferChannel chan []byte, errChannel chan error, logger *zap.Logger) error {
+func ReadBuffConn(conn util.Connection, bufferChannel chan []byte, errChannel chan error, logger *zap.Logger) error {
 	for {
-		buffer, err := util.ReadBytes(conn)
+		buffer, err := util.ReadBytes(&conn)
 		if err != nil {
 			if err == io.EOF {
 				logger.Debug("EOF error received from client. Closing connection in postgres !!")

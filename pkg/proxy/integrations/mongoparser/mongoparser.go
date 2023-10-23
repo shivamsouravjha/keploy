@@ -61,7 +61,12 @@ func decodeOutgoingMongo(clientConnId, destConnId int64, requestBuffer []byte, c
 		)
 		if string(requestBuffer) == "read form client connection" {
 			started := time.Now()
-			requestBuffer, err = util.ReadBytes(clientConn)
+			conn := util.Connection{
+				ClientConnection: &clientConn,
+				DestConnection:   &destConn,
+				IsClient:         true,
+			}
+			requestBuffer, err = util.ReadBytes(&conn)
 			if err != nil {
 				if err == io.EOF {
 					logger.Debug("recieved request buffer is empty in test mode for mongo calls")
@@ -92,7 +97,12 @@ func decodeOutgoingMongo(clientConnId, destConnId int64, requestBuffer []byte, c
 			for {
 				started = time.Now()
 				logger.Debug("into the for loop for request stream")
-				requestBuffer1, err := util.ReadBytes(clientConn)
+				conn := util.Connection{
+					ClientConnection: &clientConn,
+					DestConnection:   &destConn,
+					IsClient:         true,
+				}
+				requestBuffer1, err := util.ReadBytes(&conn)
 				if err != nil {
 					if err == io.EOF {
 						logger.Debug("recieved request buffer is empty for streaming mongo request call")
@@ -336,7 +346,12 @@ func encodeOutgoingMongo(clientConnId, destConnId int64, requestBuffer []byte, c
 		if string(requestBuffer) == "read form client connection" {
 			lstr := ""
 			started := time.Now()
-			requestBuffer, err = util.ReadBytes(clientConn)
+			conn := util.Connection{
+				ClientConnection: &clientConn,
+				DestConnection:   &destConn,
+				IsClient:         true,
+			}
+			requestBuffer, err = util.ReadBytes(&conn)
 			logger.Debug("reading from the mongo connection", zap.Any("", string(requestBuffer)))
 			if err != nil {
 				if err == io.EOF {
@@ -378,7 +393,12 @@ func encodeOutgoingMongo(clientConnId, destConnId int64, requestBuffer []byte, c
 			for {
 				tmpStr := ""
 				started = time.Now()
-				requestBuffer1, err := util.ReadBytes(clientConn)
+				conn := util.Connection{
+					ClientConnection: &clientConn,
+					DestConnection:   &destConn,
+					IsClient:         true,
+				}
+				requestBuffer1, err := util.ReadBytes(&conn)
 				logStr += tmpStr
 				if err != nil {
 					if err == io.EOF {
@@ -427,7 +447,12 @@ func encodeOutgoingMongo(clientConnId, destConnId int64, requestBuffer []byte, c
 		// read reply message from the mongo server
 		tmpStr := ""
 		started = time.Now()
-		responseBuffer, err := util.ReadBytes(destConn)
+		conn := util.Connection{
+			ClientConnection: &clientConn,
+			DestConnection:   &destConn,
+			IsClient:         false,
+		}
+		responseBuffer, err := util.ReadBytes(&conn)
 		logger.Debug("reading from the destination mongo server", zap.Any("", string(responseBuffer)))
 		logStr += tmpStr
 		if err != nil {
@@ -473,7 +498,12 @@ func encodeOutgoingMongo(clientConnId, destConnId int64, requestBuffer []byte, c
 				}
 				tmpStr := ""
 				started = time.Now()
-				responseBuffer, err = util.ReadBytes(destConn)
+				conn := util.Connection{
+					ClientConnection: &clientConn,
+					DestConnection:   &destConn,
+					IsClient:         false,
+				}
+				responseBuffer, err = util.ReadBytes(&conn)
 				logStr += tmpStr
 				if err != nil {
 					if err == io.EOF {
