@@ -42,6 +42,8 @@ func getNextID() int64 {
 	return atomic.AddInt64(&idCounter, 1)
 }
 
+var mu sync.Mutex
+
 type ProxySet struct {
 	IP4               uint32
 	IP6               [4]uint32
@@ -752,8 +754,10 @@ func (ps *ProxySet) handleConnection(conn net.Conn, port uint32, ctx context.Con
 		bufferData, err := util.ReadBytes(&clientConnection)
 		if err == nil {
 			bufferChannel <- bufferData
+			mu.Lock()
 			conn = *clientConnection.ClientConnection
 			dst = *clientConnection.DestConnection
+			mu.Unlock()
 			cancel() // Cancel other goroutines
 		} else {
 			select {
@@ -771,8 +775,10 @@ func (ps *ProxySet) handleConnection(conn net.Conn, port uint32, ctx context.Con
 		bufferData, err := util.ReadBytes(&destConnection)
 		if err == nil {
 			bufferChannel <- bufferData
+			mu.Lock()
 			conn = *destConnection.ClientConnection
 			dst = *destConnection.DestConnection
+			mu.Unlock()
 			cancel() // Cancel other goroutines
 		} else {
 			select {

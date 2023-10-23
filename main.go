@@ -6,10 +6,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/cloudflare/cfssl/log"
 	sentry "github.com/getsentry/sentry-go"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/cloudflare/cfssl/log"
 	v "github.com/hashicorp/go-version"
 	"go.keploy.io/server/cmd"
 	"go.keploy.io/server/utils"
@@ -65,7 +65,6 @@ func getKeployVersion() string {
 
 	return latestTag + "-dev"
 }
-
 
 func main() {
 	if version == "" {

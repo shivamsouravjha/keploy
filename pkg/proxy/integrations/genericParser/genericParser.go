@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"strings"
+	"sync"
 
 	"net"
 	"os"
@@ -19,6 +20,8 @@ import (
 	"go.keploy.io/server/utils"
 	"go.uber.org/zap"
 )
+
+var mu sync.Mutex
 
 func ProcessGeneric(requestBuffer []byte, clientConn, destConn net.Conn, h *hooks.Hook, logger *zap.Logger, ctx context.Context) {
 	switch models.GetMode() {
@@ -166,11 +169,14 @@ func encodeGenericOutgoing(requestBuffer []byte, clientConn, destConn net.Conn, 
 		// Recover from panic and gracefully shutdown
 		defer h.Recover(pkg.GenerateRandomID())
 		defer utils.HandlePanic()
+		mu.Lock()
 		conn := util.Connection{
 			ClientConnection: &clientConn,
 			DestConnection:   &destConn,
 			IsClient:         true,
 		}
+		mu.Unlock() // Unlock the mutex
+
 		ReadBuffConn(conn, clientBufferChannel, errChannel, logger)
 	}()
 	// read response from destination
@@ -178,11 +184,14 @@ func encodeGenericOutgoing(requestBuffer []byte, clientConn, destConn net.Conn, 
 		// Recover from panic and gracefully shutdown
 		defer h.Recover(pkg.GenerateRandomID())
 		defer utils.HandlePanic()
+		mu.Lock()
 		destConn := util.Connection{
 			ClientConnection: &clientConn,
 			DestConnection:   &destConn,
 			IsClient:         false,
 		}
+		mu.Unlock() // Unlock the mutex
+
 		ReadBuffConn(destConn, destBufferChannel, errChannel, logger)
 	}()
 

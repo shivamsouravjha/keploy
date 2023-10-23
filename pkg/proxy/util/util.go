@@ -3,6 +3,7 @@ package util
 import (
 	"bufio"
 	"crypto"
+	"sync"
 
 	"crypto/tls"
 	"crypto/x509"
@@ -41,6 +42,8 @@ import (
 	"go.keploy.io/server/pkg/models"
 	"go.keploy.io/server/utils"
 )
+
+var mu sync.Mutex
 
 type certKeyPair struct {
 	cert tls.Certificate
@@ -257,48 +260,49 @@ func ReadBytes(reader *Connection) ([]byte, error) {
 	var buffer []byte
 	const maxEmptyReads = 5
 	emptyReads := 0
-
+	var connReader *bufio.Reader
+	if reader.IsClient {
+		connReader = bufio.NewReader(*reader.ClientConnection)
+		fmt.Println("read it client")
+	} else {
+		connReader = bufio.NewReader(*reader.DestConnection)
+		fmt.Println("read it destination")
+	}
+	if reader.IsClient {
+		initialData := make([]byte, 5)
+		testBuffer, err := connReader.Peek(len(initialData))
+		fmt.Println("testBuffer", string(testBuffer), err)
+		isTLS := isTLSHandshake(testBuffer)
+		if isTLS {
+			mu.Lock()
+			multiReader := io.MultiReader(connReader, *reader.ClientConnection)
+			*reader.ClientConnection = &CustomConn{
+				Conn: *reader.ClientConnection,
+				r:    multiReader,
+			}
+			tlsConnection, err := HandleTLSConnection(*reader.ClientConnection)
+			fmt.Println("tlsConnection", err)
+			connReader = bufio.NewReader(tlsConnection)
+			reader.ClientConnection = &tlsConnection
+			config := &tls.Config{
+				InsecureSkipVerify: false,
+				ServerName:         destinationUrl,
+			}
+			var dst net.Conn
+			remoteAddr := (*reader.ClientConnection).RemoteAddr().(*net.TCPAddr)
+			sourcePort := remoteAddr.Port
+			dst, err = tls.Dial("tcp", fmt.Sprintf("%v:%v", destinationUrl, SourceDestInfo[sourcePort].DestPort), config)
+			fmt.Println("dst", err)
+			reader.DestConnection = &dst
+			fmt.Println("twist of fate happened", sourcePort)
+			mu.Unlock()
+		}
+	}
 	for {
 		buf := make([]byte, 1024)
-		var connReader *bufio.Reader
-		if reader.IsClient {
-			connReader = bufio.NewReader(*reader.ClientConnection)
-			fmt.Println("read it client")
-		} else {
-			connReader = bufio.NewReader(*reader.DestConnection)
-			fmt.Println("read it destination")
-		}
-		if reader.IsClient {
-			initialData := make([]byte, 5)
-			testBuffer, err := connReader.Peek(len(initialData))
-			fmt.Println("testBuffer", string(testBuffer), err)
-			isTLS := isTLSHandshake(testBuffer)
-			if isTLS {
-				multiReader := io.MultiReader(connReader, *reader.ClientConnection)
-				*reader.ClientConnection = &CustomConn{
-					Conn: *reader.ClientConnection,
-					r:    multiReader,
-				}
-				tlsConnection, err := HandleTLSConnection(*reader.ClientConnection)
-				fmt.Println("tlsConnection", err)
-				connReader = bufio.NewReader(tlsConnection)
-				reader.ClientConnection = &tlsConnection
-				config := &tls.Config{
-					InsecureSkipVerify: false,
-					ServerName:         destinationUrl,
-				}
-				var dst net.Conn
-				remoteAddr := (*reader.ClientConnection).RemoteAddr().(*net.TCPAddr)
-				sourcePort := remoteAddr.Port
-				dst, err = tls.Dial("tcp", fmt.Sprintf("%v:%v", destinationUrl, SourceDestInfo[sourcePort].DestPort), config)
-				fmt.Println("dst", err)
-				reader.DestConnection = &dst
-				fmt.Println("twist of fate happened", sourcePort)
 
-			}
-		}
 		n, err := connReader.Read(buf)
-
+		fmt.Println(string(buf), "bufer")
 		if n > 0 {
 			buffer = append(buffer, buf[:n]...)
 			emptyReads = 0 // reset the counter because we got some data

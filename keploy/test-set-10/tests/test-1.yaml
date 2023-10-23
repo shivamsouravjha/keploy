@@ -1,0 +1,55 @@
+version: api.keploy.io/v1beta2
+kind: Http
+name: test-1
+spec:
+    metadata: {}
+    req:
+        method: GET
+        proto_major: 1
+        proto_minor: 1
+        url: http://localhost:3001/api/email/getVerificationCode?email=shivamsouravjha@gmail.com
+        url_params:
+            email: shivamsouravjha@gmail.com
+        header:
+            Accept: '*/*'
+            Accept-Encoding: gzip, deflate, br
+            Content-Length: "61"
+            Content-Type: application/json
+            Host: localhost:3001
+            Postman-Token: 1cb7afcc-09e6-4318-ad18-4534ed76f20d
+            User-Agent: PostmanRuntime/7.33.0
+        body: |-
+            {
+                "otp":"2121",
+                "email":"shivamsouravjha@gmail.com"
+            }
+        body_type: ""
+    resp:
+        status_code: 200
+        header:
+            Content-Length: "51"
+            Content-Type: application/json; charset=utf-8
+            Date: Mon, 23 Oct 2023 10:44:20 GMT
+        body: '{"status":"true","message":"OTP sent successfully"}'
+        body_type: ""
+        status_message: ""
+        proto_major: 0
+        proto_minor: 0
+    objects: []
+    assertions:
+        noise:
+            - header.Date
+    created: 1698057863
+curl: |-
+    curl --request GET \
+      --url http://localhost:3001/api/email/getVerificationCode?email=shivamsouravjha@gmail.com \
+      --header 'Content-Type: application/json' \
+      --header 'User-Agent: PostmanRuntime/7.33.0' \
+      --header 'Accept: */*' \
+      --header 'Postman-Token: 1cb7afcc-09e6-4318-ad18-4534ed76f20d' \
+      --header 'Host: localhost:3001' \
+      --header 'Accept-Encoding: gzip, deflate, br' \
+      --data '{
+        "otp":"2121",
+        "email":"shivamsouravjha@gmail.com"
+    }'
